@@ -1,10 +1,11 @@
-#ifndef NMF_H_INCLUDED
-#define NMF_H_INCLUDED
+#ifndef NRB_H_INCLUDED
+#define NRB_H_INCLUDED
 
 /*
- * nmf.h
+ * nrb.h
+ * =====
  * 
- * Noir Music File (NMF) parser library.
+ * NoiR Binary (NRB) file library.
  */
 
 #include <stddef.h>
@@ -12,40 +13,56 @@
 #include <stdint.h>
 
 /*
- * The maximum section count possible for an NMF file.
+ * Constants
+ * ---------
  */
-#define NMF_MAXSECT (INT32_C(65535))
 
 /*
- * The maximum note count possible for an NMF file.
+ * The maximum section count possible for an NRB file.
  */
-#define NMF_MAXNOTE (INT32_C(1048576))
+#define NRB_MAXSECT (INT32_C(65535))
+
+/*
+ * The maximum note count possible for an NRB file.
+ */
+#define NRB_MAXNOTE (INT32_C(1048576))
 
 /*
  * The minimum and maximum pitch values.
  */
-#define NMF_MINPITCH (-39)
-#define NMF_MAXPITCH (48)
+#define NRB_MINPITCH (-39)
+#define NRB_MAXPITCH (48)
 
 /*
  * The maximum articulation value.
  */
-#define NMF_MAXART (61)
+#define NRB_MAXART (61)
 
 /*
- * The quantum basis values.
+ * The maximum integer ramp value.
  */
-#define NMF_BASIS_Q96   (0)   /* 96 quanta in a quarter note */
-#define NMF_BASIS_44100 (1)   /* 44,100 quanta per second */
-#define NMF_BASIS_48000 (2)   /* 48,000 quanta per second */
+#define NRB_MAXRAMP (16384)
 
 /*
- * NMF_DATA structure prototype.
+ * Version status codes.
+ */
+#define NRB_VER_OK    (0)   /* NRB version supported */
+#define NRB_VER_MINOR (1)   /* NRB minor version unsupported */
+#define NRB_VER_MAJOR (2)   /* NRB major version unsupported */
+#define NRB_VER_ERROR (3)   /* Can't read NRB version */
+
+/*
+ * Type declarations
+ * -----------------
+ */
+
+/*
+ * NRB_DATA structure prototype.
  * 
  * Definition given in the implementation.
  */
-struct NMF_DATA_TAG;
-typedef struct NMF_DATA_TAG NMF_DATA;
+struct NRB_DATA_TAG;
+typedef struct NRB_DATA_TAG NRB_DATA;
 
 /*
  * Representation of a parsed note.
@@ -53,27 +70,21 @@ typedef struct NMF_DATA_TAG NMF_DATA;
 typedef struct {
   
   /*
-   * The time offset in quanta of this note.
+   * The starting time offset in microseconds.
    * 
    * This is zero or greater.  It must be greater than or equal to the
    * offset of the section that the note belongs to.
    */
-  int32_t t;
+  int64_t start;
   
   /*
-   * The duration of this note.
+   * The release time offset in microseconds.
    * 
-   * If this is greater than zero, it is a count of quanta.
-   * 
-   * If this is less than zero, the absolute value is grace note offset.
-   * -1 is the grace note immediately before the beat, -2 is the grace
-   * note before -1, and so forth.  It may not be less than the value
-   * -(INT32_MAX).
-   * 
-   * A value of zero is allowed, reserved for cues and other special
-   * data.
+   * This must be greater than the start time.  The release time
+   * subtracted by the starting time equals the duration of the note in
+   * microseconds.
    */
-  int32_t dur;
+  int64_t release;
   
   /*
    * The pitch of this note.
@@ -82,16 +93,31 @@ typedef struct {
    * value of zero is middle C, -1 is B below middle C, 2 is D above
    * middle C, and so forth.
    * 
-   * The range is [NMF_MINPITCH, NMF_MAXPITCH].
+   * The range is [NRB_MINPITCH, NRB_MAXPITCH].
    */
-  int16_t pitch;
+  int8_t pitch;
   
   /*
-   * The articulation index of this note.
+   * The articulation of this note.
    * 
-   * The range is [0, NMF_MAXART].
+   * The most significant bit "P" is a flag indicating whether the note
+   * was modified by a sustain pedal.
+   * 
+   * The second most significant bit "G" is a flag indicating whether
+   * the note is a grace note.
+   * 
+   * The six least significant bits are an articulation index "A" in
+   * range [0, NRB_MAXART].
    */
-  uint16_t art;
+  uint8_t art;
+  
+  /*
+   * The ramp value for the note.
+   * 
+   * This is in range [0, NRB_MAXRAMP], which encodes a floating-point
+   * range [0.0, 1.0].
+   */
+  uint16_t ramp;
   
   /*
    * The section index of this note.
@@ -106,61 +132,80 @@ typedef struct {
    */
   uint16_t layer_i;
   
-} NMF_NOTE;
+} NRB_NOTE;
+
+/*
+ * Public functions
+ * ----------------
+ */
 
 /*
  * Allocate a new, empty data object.
  * 
- * The returned object will have the default quantum basis of 96 quanta
- * per quarter note, section zero defined at offset zero, and an empty
- * note table.
+ * The returned object will have section zero defined at offset zero and
+ * an empty note table.
  * 
- * The returned object must eventually be freed with nmf_free().
+ * The returned object must eventually be freed with nrb_free().
  * 
- * To define a new data object from an NMF file, use nmf_parse()
+ * To define a new data object from an NRB file, use nrb_parse()
  * instead.
  * 
  * Return:
  * 
  *   a new, empty data object
  */
-NMF_DATA *nmf_alloc(void);
+NRB_DATA *nrb_alloc(void);
 
 /*
- * Parse the given file as an NMF file and return an object representing
+ * Parse the given file as an NRB file and return an object representing
  * the parsed data.
  * 
  * pf is the file to read.  The file is read from the current position
- * in sequential order.  Any additional data after the NMF file is
+ * in sequential order.  Any additional data after the NRB file is
  * ignored.  Undefined behavior occurs if pf is not open for reading.
+ * If there is an error reading the data file, NULL is returned.
  * 
- * The returned object must eventually be freed with nmf_free().
+ * If pVer is provided, then a NRB_VER constant will always be written
+ * into it by this function.  OK means the version was supported.  The
+ * function might still fail if there was a problem reading the data.
+ * MINOR means the major version of the file is supported but not the
+ * minor version.  The function might fail or succeed.  The user should
+ * be warned even if the function succeeds.  MAJOR means the major
+ * version of the file is not supported.  The function always fails in
+ * this case.  ERROR means the version couldn't be read, which means the
+ * file isn't an NRB file.  The function always fails in this case.
+ * 
+ * The returned object must eventually be freed with nrb_free().
  * 
  * Parameters:
  * 
- *   pf - the NMF file to parse
+ *   pf - the NRB file to parse
+ * 
+ *   pVer - pointer to a variable to receive a version status, or NULL
  * 
  * Return:
  * 
- *   a parsed representation of the NMF file data, or NULL if there was
+ *   a parsed representation of the NRB file data, or NULL if there was
  *   an error
  */
-NMF_DATA *nmf_parse(FILE *pf);
+NRB_DATA *nrb_parse(FILE *pf, int *pVer);
 
 /*
- * Wrapper around nmf_parse that accepts a file path instead of an open
+ * Wrapper around nrb_parse that accepts a file path instead of an open
  * file.
  * 
  * Parameters:
  * 
- *   pPath - the path to the NMF file to parse
+ *   pPath - the path to the NRB file to parse
+ * 
+ *   pVer - pointer to a variable to receive a version status, or NULL
  * 
  * Return:
  * 
- *   a parsed representation of the NMF file, or NULL if there was an
+ *   a parsed representation of the NRB file, or NULL if there was an
  *   error
  */
-NMF_DATA *nmf_parse_path(const char *pPath);
+NRB_DATA *nrb_parse_path(const char *pPath, int *pVer);
 
 /*
  * Release the given parsed data object.
@@ -171,27 +216,12 @@ NMF_DATA *nmf_parse_path(const char *pPath);
  * 
  *   pd - the parsed data object to free, or NULL
  */
-void nmf_free(NMF_DATA *pd);
-
-/*
- * Return the quantum basis of the parsed data object.
- * 
- * The return value is one of the NMF_BASIS constants.
- * 
- * Parameters:
- * 
- *   pd - the parsed data object
- * 
- * Return:
- * 
- *   the quantum basis
- */
-int nmf_basis(NMF_DATA *pd);
+void nrb_free(NRB_DATA *pd);
 
 /*
  * Return the number of sections in the parsed data object.
  * 
- * The range is [1, NMF_MAXSECT].
+ * The range is [1, NRB_MAXSECT].
  * 
  * Parameters:
  * 
@@ -201,13 +231,13 @@ int nmf_basis(NMF_DATA *pd);
  * 
  *   the number of sections
  */
-int32_t nmf_sections(NMF_DATA *pd);
+int32_t nrb_sections(NRB_DATA *pd);
 
 /*
  * Return the number of notes in the parsed data object.
  * 
- * The range is [0, NMF_MAXNOTE].  Parsed files will never return a
- * count of zero, but blank constructed NMF_DATA objects might.
+ * The range is [0, NRB_MAXNOTE].  Parsed files will never return a
+ * count of zero, but blank constructed NRB_DATA objects might.
  * 
  * Parameters:
  * 
@@ -217,13 +247,14 @@ int32_t nmf_sections(NMF_DATA *pd);
  * 
  *   the number of notes
  */
-int32_t nmf_notes(NMF_DATA *pd);
+int32_t nrb_notes(NRB_DATA *pd);
 
 /*
- * Return the starting quanta offset of the given section index.
+ * Return the starting offset in microseconds of the given section
+ * index.
  * 
  * sect_i is the section index within the parsed data object.  It must
- * be at least zero and less than nmf_sections().
+ * be at least zero and less than nrb_sections().
  * 
  * Each section after the first section must have a starting offset that
  * is greater than or equal to the previous section.  The first section
@@ -237,15 +268,15 @@ int32_t nmf_notes(NMF_DATA *pd);
  * 
  * Return:
  * 
- *   the starting quanta offset of this section
+ *   the starting microsecond offset of this section
  */
-int32_t nmf_offset(NMF_DATA *pd, int32_t sect_i);
+int64_t nrb_offset(NRB_DATA *pd, int32_t sect_i);
 
 /*
  * Return a specific note within the parsed data object.
  * 
  * note_i is the note index within the parsed data object.  It must be
- * at least zero and less than nmf_notes().
+ * at least zero and less than nrb_notes().
  * 
  * pn points to the structure to fill with information about the note.
  * 
@@ -259,13 +290,13 @@ int32_t nmf_offset(NMF_DATA *pd, int32_t sect_i);
  * 
  *   pn - the note structure to fill
  */
-void nmf_get(NMF_DATA *pd, int32_t note_i, NMF_NOTE *pn);
+void nrb_get(NRB_DATA *pd, int32_t note_i, NRB_NOTE *pn);
 
 /*
  * Set a specific note within the parsed data object.
  * 
  * note_i is the note index within the parsed data object.  It must be
- * at least zero and less than nmf_notes().
+ * at least zero and less than nrb_notes().
  * 
  * pn points to the new note data to replace the existing note data.
  * See the structure definition for requirements.  A fault occurs if the
@@ -274,7 +305,7 @@ void nmf_get(NMF_DATA *pd, int32_t note_i, NMF_NOTE *pn);
  * The data is copied in from the given structure.
  * 
  * This function should be used to change an existing note.  To add an
- * entirely new note, use nmf_append().
+ * entirely new note, use nrb_append().
  * 
  * Parameters:
  * 
@@ -284,16 +315,16 @@ void nmf_get(NMF_DATA *pd, int32_t note_i, NMF_NOTE *pn);
  * 
  *   pn - the new note data to set
  */
-void nmf_set(NMF_DATA *pd, int32_t note_i, const NMF_NOTE *pn);
+void nrb_set(NRB_DATA *pd, int32_t note_i, const NRB_NOTE *pn);
 
 /*
- * Define a new section beginning at the given offset in quanta.
+ * Define a new section beginning at the given offset in microseconds.
  * 
  * pd is the data object to add a section to.
  * 
- * offset is the offset in quanta from the beginning of the piece.  An
- * offset of zero is the beginning of the piece.  offset must be zero or
- * greater.
+ * offset is the offset in microseconds from the beginning of the piece.
+ * An offset of zero is the beginning of the piece.  offset must be zero
+ * or greater.
  * 
  * The first section (section index zero) is always already defined with
  * an offset zero.  This call is only made for sections after section
@@ -302,7 +333,7 @@ void nmf_set(NMF_DATA *pd, int32_t note_i, const NMF_NOTE *pn);
  * Subsequent sections must have an offset that is greater than or equal
  * to the offset of the previous section or a fault occurs.
  * 
- * If the number of sections exceeds NMF_MAXSECT, then the function will
+ * If the number of sections exceeds NRB_MAXSECT, then the function will
  * fail.
  * 
  * Parameters:
@@ -315,7 +346,7 @@ void nmf_set(NMF_DATA *pd, int32_t note_i, const NMF_NOTE *pn);
  * 
  *   non-zero if successful, zero if too many sections
  */
-int nmf_sect(NMF_DATA *pd, int32_t offset);
+int nrb_sect(NRB_DATA *pd, int64_t offset);
 
 /*
  * Append a new note event to the given data object.
@@ -324,7 +355,7 @@ int nmf_sect(NMF_DATA *pd, int32_t offset);
  * section index that is greater than zero may only be defined after
  * that section has been defined.
  * 
- * See the NMF_NOTE structure documentation for the details of how to
+ * See the NRB_NOTE structure documentation for the details of how to
  * fill the structure out.  The given structure is copied into the data
  * object.
  * 
@@ -341,40 +372,22 @@ int nmf_sect(NMF_DATA *pd, int32_t offset);
  * 
  *   non-zero if successful, zero if too many notes
  */
-int nmf_append(NMF_DATA *pd, const NMF_NOTE *pn);
-
-/*
- * Change the quantum basis of the given data object.
- * 
- * basis is the new basis to set.  It must be one of the NMF_BASIS
- * constant values.
- * 
- * None of the time or duration values are changed by this function.
- * This simply changes the quantum basis metadata.
- * 
- * Parameters:
- * 
- *   pd - the data object to modify
- * 
- *   basis - the new quantum basis
- */
-void nmf_rebase(NMF_DATA *pd, int basis);
+int nrb_append(NRB_DATA *pd, const NRB_NOTE *pn);
 
 /*
  * Sort all the note events in the given data object.
  * 
- * The notes are put in ascending order of time offsets.  Grace notes
- * are sorted by offset, coming before the beat.
+ * The notes are put in ascending order of starting time offsets.
  * 
  * Parameters:
  * 
  *   pd - the data object to sort
  */
-void nmf_sort(NMF_DATA *pd);
+void nrb_sort(NRB_DATA *pd);
 
 /*
  * Output the contents of the given data object to the given file in the
- * Noir Music File (NMF) format.
+ * NoiR Binary (NRB) file format.
  * 
  * pd is the data object to serialize.  It must have at least one note
  * or the function will fail.
@@ -386,12 +399,12 @@ void nmf_sort(NMF_DATA *pd);
  * 
  *   pd - the data object to serialize
  * 
- *   pf - the file to write the NMF output to
+ *   pf - the file to write the NRB output to
  * 
  * Return:
  * 
  *   non-zero if successful, zero if no notes have been defined
  */
-int nmf_serialize(NMF_DATA *pd, FILE *pf);
+int nrb_serialize(NRB_DATA *pd, FILE *pf);
 
 #endif
