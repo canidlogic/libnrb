@@ -1,33 +1,32 @@
 /*
- * nmfwalk.c
+ * nrbwalk.c
  * =========
  * 
- * Walk through a Noir Music File (NMF), verify it, and optionally print
- * a textual description of its data.
+ * Walk through a NoiR Binary (NRB) file, verify it, and optionally
+ * print a textual description of its data.
  * 
  * Syntax
  * ------
  * 
- *   nmfwalk
- *   nmfwalk -check
+ *   nrbwalk
+ *   nrbwalk -check
  * 
- * Both invocations read an NMF file from standard input and verify it.
+ * Both invocations read an NRB file from standard input and verify it.
  * 
- * The "-check" invocation does nothing beyond verifying the NMF file.
+ * The "-check" invocation does nothing beyond verifying the NRB file.
  * 
  * The parameter-less invocation also prints out a textual description
- * of the data within the NMF file to standard output.
+ * of the data within the NRB file to standard output.
  * 
  * File format
  * -----------
  * 
- * See the "Noir Music File (NMF) specification" for the format of the
- * input binary file.
+ * See nrb_spec.md for the format of the input NRB file.
  * 
- * Compation
- * ---------
+ * Compilation
+ * -----------
  * 
- * Compile with the nmf library.
+ * Compile with the libnrb.
  */
 
 #include <stddef.h>
@@ -35,7 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "nmf.h"
+#include "nrb.h"
 
 /*
  * Local functions
@@ -43,7 +42,7 @@
  */
 
 /* Prototypes */
-static void report(NMF_DATA *pd, FILE *po);
+static void report(NRB_DATA *pd, FILE *po);
 
 /*
  * Print a textual representation of the given parsed data object to the
@@ -55,44 +54,24 @@ static void report(NMF_DATA *pd, FILE *po);
  * 
  *   po - the output file
  */
-static void report(NMF_DATA *pd, FILE *po) {
+static void report(NRB_DATA *pd, FILE *po) {
   
   int32_t x = 0;
-  int basis = 0;
   int32_t scount = 0;
   int32_t ncount = 0;
-  NMF_NOTE n;
+  NRB_NOTE n;
   
   /* Initialize structure */
-  memset(&n, 0, sizeof(NMF_NOTE));
+  memset(&n, 0, sizeof(NRB_NOTE));
   
   /* Check parameter */
   if ((pd == NULL) || (po == NULL)) {
     abort();
   }
   
-  /* Get the basis */
-  basis = nmf_basis(pd);
-  
   /* Get section count and note count */
-  scount = nmf_sections(pd);
-  ncount = nmf_notes(pd);
-  
-  /* Print the basis */
-  fprintf(po, "BASIS   : ");
-  if (basis == NMF_BASIS_Q96) {
-    fprintf(po, "96 quanta per quarter\n");
-    
-  } else if (basis == NMF_BASIS_44100) {
-    fprintf(po, "44,100 quanta per second\n");
-    
-  } else if (basis == NMF_BASIS_48000) {
-    fprintf(po, "48,000 quanta per second\n");
-    
-  } else {
-    /* Unrecognized basis */
-    abort();
-  }
+  scount = nrb_sections(pd);
+  ncount = nrb_notes(pd);
   
   /* Print the section and note counts */
   fprintf(po, "SECTIONS: %ld\n", (long) scount);
@@ -101,9 +80,9 @@ static void report(NMF_DATA *pd, FILE *po) {
   
   /* Print each section location */
   for(x = 0; x < scount; x++) {
-    fprintf(po, "SECTION %ld AT %ld\n",
+    fprintf(po, "SECTION %ld AT %lld\n",
               (long) x,
-              (long) nmf_offset(pd, x));
+              (long long) nrb_offset(pd, x));
   }
   fprintf(po, "\n");
   
@@ -111,14 +90,18 @@ static void report(NMF_DATA *pd, FILE *po) {
   for(x = 0; x < ncount; x++) {
     
     /* Get the note */
-    nmf_get(pd, x, &n);
+    nrb_get(pd, x, &n);
     
     /* Print the information */
-    fprintf(po, "NOTE T=%ld DUR=%ld P=%d A=%ld S=%ld L=%ld\n",
-            (long) n.t,
-            (long) n.dur,
+    fprintf(po,
+      "NOTE T=%lld DUR=%lld Pi=%d Pd=%d Gr=%d A=%d R=%ld S=%ld L=%ld\n",
+            (long long) n.start,
+            (long long) (n.release - n.start),
             (int) n.pitch,
-            (long) n.art,
+            (int) ((n.art & 0x80) >> 7),
+            (int) ((n.art & 0x40) >> 6),
+            (int) n.art,
+            (long) n.ramp,
             (long) n.sect,
             ((long) n.layer_i) + 1);
   }
@@ -134,7 +117,8 @@ int main(int argc, char *argv[]) {
   int status = 1;
   const char *pModule = NULL;
   int silent = 0;
-  NMF_DATA *pd = NULL;
+  int ver = 0;
+  NRB_DATA *pd = NULL;
   
   /* Get module name */
   if (argc > 0) {
@@ -145,7 +129,7 @@ int main(int argc, char *argv[]) {
     }
   }
   if (pModule == NULL) {
-    pModule = "nmfwalk";
+    pModule = "nrbwalk";
   }
   
   /* There may be at most one argument beyond the module name */
@@ -172,11 +156,26 @@ int main(int argc, char *argv[]) {
     }
   }
   
-  /* Parse standard input as an NMF file */
+  /* Parse standard input as an NRB file */
   if (status) {
-    pd = nmf_parse(stdin);
+    pd = nrb_parse(stdin, &ver);
+    if (ver != NRB_VER_OK) {
+      if (ver == NRB_VER_MINOR) {
+        fprintf(stderr, "%s: WARNING: Unsupported minor NRB version!\n",
+                  pModule);
+        
+      } else if (ver == NRB_VER_MAJOR) {
+        fprintf(stderr, "%s: ERROR: Unsupported major NRB version!\n",
+                  pModule);
+        
+      } else {
+        fprintf(stderr, "%s: Couldn't read valid NRB version!\n",
+                  pModule);
+      }
+    }
+    
     if (pd == NULL) {
-      fprintf(stderr, "%s: A valid NMF file could not be read!\n",
+      fprintf(stderr, "%s: A valid NRB file could not be read!\n",
                 pModule);
       status = 0;
     }
@@ -188,7 +187,7 @@ int main(int argc, char *argv[]) {
   }
   
   /* Free parsed data object if allocated */
-  nmf_free(pd);
+  nrb_free(pd);
   pd = NULL;
   
   /* Invert status and return */
